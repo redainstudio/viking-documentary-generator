@@ -1,14 +1,11 @@
 from __future__ import annotations
 
 import argparse
-import csv
 import sys
-from pathlib import Path
 
 from pipeline.audio_analyzer import transcribe_audio
-from pipeline.config import ROOT, Settings, project_path
+from pipeline.config import ROOT, Settings, project_path, require_gemini_api_key
 from pipeline.image_generator import generate_images
-from pipeline.io_utils import read_json
 from pipeline.quality import make_contact_sheet, write_timeline
 from pipeline.scene_planner import plan_scenes
 from pipeline.video_assembler import assemble_video
@@ -20,9 +17,11 @@ def build_parser() -> argparse.ArgumentParser:
     )
     sub = parser.add_subparsers(dest="command", required=True)
 
-    transcribe = sub.add_parser("transcribe", help="Transcribe narration and extract word-level timestamps.")
+    transcribe = sub.add_parser("transcribe", help="Transcribe narration locally with MLX Whisper.")
     transcribe.add_argument("--audio", default="assets/narration/narration.mp3")
     transcribe.add_argument("--output", default="output/transcription/transcript.json")
+    transcribe.add_argument("--model", default=None, help="Optional MLX Whisper model repository.")
+    transcribe.add_argument("--language", default=None, help="Language code, e.g. en. Defaults to WHISPER_LANGUAGE.")
 
     plan = sub.add_parser("plan", help="Create one timed image prompt per narration window.")
     plan.add_argument("--transcript", default="output/transcription/transcript.json")
@@ -62,22 +61,26 @@ def main(argv: list[str] | None = None) -> int:
         settings = Settings.from_env()
         if args.command == "transcribe":
             transcribe_audio(
-                project_path(args.audio), project_path(args.output),
-                settings.transcribe_model, settings.api_key,
+                project_path(args.audio),
+                project_path(args.output),
+                model=args.model or settings.whisper_model,
+                language=args.language or settings.whisper_language,
             )
         elif args.command == "plan":
+            key = require_gemini_api_key(settings.api_key)
             plan_scenes(
                 project_path(args.transcript), project_path(args.output),
-                settings.text_model, settings.api_key,
+                settings.text_model, key,
                 settings.max_scene_seconds, settings.min_scene_seconds,
                 settings.planner_batch_size,
             )
         elif args.command == "generate":
+            key = require_gemini_api_key(settings.api_key)
             if args.limit is not None and args.limit <= 0:
                 raise ValueError("--limit must be a positive integer.")
             generate_images(
                 project_path(args.scenes), project_path(args.output_dir), project_path(args.references),
-                settings.image_model, settings.api_key, settings.image_aspect_ratio,
+                settings.image_model, key, settings.image_aspect_ratio,
                 settings.image_size, settings.image_retries, args.limit, args.overwrite,
                 set(args.ids) if args.ids else None,
             )
