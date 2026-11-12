@@ -174,8 +174,10 @@ Timing requirements:
 
     cleaned = response_text.strip()
     if cleaned.startswith("```"):
-        cleaned = re.sub(r"^\`\`\`(?:json)?\\s*", "", cleaned, flags=re.IGNORECASE)
-        cleaned = re.sub(r"\\s*\`\`\`$", "", cleaned)
+        first_newline = cleaned.find("\n")
+        cleaned = cleaned[first_newline + 1:] if first_newline >= 0 else cleaned[3:]
+        if cleaned.rstrip().endswith("```"):
+            cleaned = cleaned.rstrip()[:-3].strip()
     try:
         result = json.loads(cleaned)
     except json.JSONDecodeError as exc:
