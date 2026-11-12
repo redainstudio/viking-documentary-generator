@@ -148,6 +148,72 @@ def build_timed_windows(
     return windows
 
 
+def _build_windows_from_segments(
+    segments: list[dict[str, Any]], audio_duration: float, max_seconds: float
+) -> list[dict[str, Any]]:
+    """Convert Gemini's timed narration segments into fixed, ordered scene windows."""
+    if not segments:
+        raise ValueError("Transcript contains no timed narration segments.")
+    if not 0 < max_seconds <= 5:
+        raise ValueError("Maximum scene duration must be > 0 and <= 5 seconds.")
+
+    normalized = sorted(segments, key=lambda item: (float(item["start"]), float(item["end"])))
+    windows: list[dict[str, Any]] = []
+    cursor = 0.0
+
+    def append_window(start: float, end: float, narration: str, is_pause: bool = False) -> None:
+        if end <= start + 0.001:
+            return
+        windows.append({
+            "id": f"scene_{len(windows) + 1:04d}",
+            "start": round(start, 3),
+            "end": round(end, 3),
+            "duration": round(end - start, 3),
+            "narration": narration,
+            "word_count": 0 if is_pause else len(narration.split()),
+            "is_pause": is_pause,
+        })
+
+    def append_pause(start: float, end: float) -> None:
+        while start < end - 0.01:
+            next_end = min(end, start + max_seconds)
+            append_window(start, next_end, "[Brief narration pause; hold a relevant transition visual]", True)
+            start = next_end
+
+    for segment in normalized:
+        start = max(cursor, max(0.0, float(segment["start"])))
+        end = min(audio_duration, float(segment["end"]))
+        narration = str(segment.get("text", "")).strip()
+        if not narration or end <= start + 0.001:
+            continue
+        if start - cursor > 0.08:
+            append_pause(cursor, start)
+
+        duration = end - start
+        part_count = max(1, int((duration + max_seconds - 1e-6) // max_seconds))
+        words = narration.split()
+        for part_index in range(part_count):
+            left = round(len(words) * part_index / part_count)
+            right = round(len(words) * (part_index + 1) / part_count)
+            part_start = start + duration * part_index / part_count
+            part_end = start + duration * (part_index + 1) / part_count
+            part_text = " ".join(words[left:right]).strip()
+            if part_text:
+                append_window(part_start, part_end, part_text)
+        cursor = max(cursor, end)
+
+    if audio_duration - cursor > 0.08:
+        append_pause(cursor, audio_duration)
+
+    for index, window in enumerate(windows, start=1):
+        window["id"] = f"scene_{index:04d}"
+        if window["duration"] > max_seconds + 0.001:
+            raise ValueError(f"Timed segment exceeds maximum scene duration: {window}")
+    if not windows:
+        raise ValueError("No usable scene windows could be built from the timed segments.")
+    return windows
+
+
 def _planner_call(client: Any, model: str, windows: list[dict[str, Any]]) -> dict[str, Any]:
     from google.genai import types
     prompt = {
@@ -188,11 +254,18 @@ def plan_scenes(
     batch_size: int,
 ) -> list[dict[str, Any]]:
     transcript = read_json(transcript_path)
+    audio_duration = float(transcript.get("duration_seconds") or 0)
+    segments = transcript.get("segments") or []
     words = transcript.get("words") or []
-    windows = build_timed_windows(
-        words, max_seconds=max_seconds, min_seconds=min_seconds,
-        audio_duration=float(transcript.get("duration_seconds") or max(w["end"] for w in words)),
-    )
+    if segments:
+        windows = _build_windows_from_segments(segments, audio_duration, max_seconds)
+    else:
+        if not words:
+            raise ValueError("Transcript has neither timed segments nor word-level timestamps.")
+        windows = build_timed_windows(
+            words, max_seconds=max_seconds, min_seconds=min_seconds,
+            audio_duration=audio_duration or max(float(w["end"]) for w in words),
+        )
     try:
         from google import genai
     except ImportError as exc:
