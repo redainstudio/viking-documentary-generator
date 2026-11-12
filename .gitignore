@@ -1,0 +1,17 @@
+.env
+.venv/
+__pycache__/
+*.py[cod]
+.DS_Store
+assets/narration/*
+!assets/narration/.gitkeep
+assets/references/*
+!assets/references/README.md
+output/transcription/*
+!output/transcription/.gitkeep
+output/storyboard/*
+!output/storyboard/.gitkeep
+output/images/*
+!output/images/.gitkeep
+output/video/*
+!output/video/.gitkeep

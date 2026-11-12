@@ -1,0 +1,9 @@
+[tool.pytest.ini_options]
+pythonpath = ["."]
+testpaths = ["tests"]
+
+[project]
+name = "stickman-documentary-image-pipeline"
+version = "0.1.0"
+description = "Narration-first automated stickman documentary scene planning and image generation"
+requires-python = ">=3.11"
