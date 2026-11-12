@@ -102,66 +102,144 @@ def _extract_annotations_fallback(interaction: Any) -> list[dict[str, Any]]:
     return sorted(unique.values(), key=lambda item: (item["start"], item["end"]))
 
 
-def transcribe_audio(audio_path: Path, output_path: Path, model: str, api_key: str) -> dict[str, Any]:
+def transcribe_audio(
+    audio_path: Path,
+    output_path: Path,
+    model: str,
+    api_key: str,
+    max_scene_seconds: float = 4.8,
+) -> dict[str, Any]:
+    """Transcribe audio with Gemini Flash audio understanding.
+
+    Gemini Flash is a general audio-understanding model, not a dedicated forced
+    aligner. It returns timestamped narration segments; timestamps are model
+    estimates and should be checked against the audio before final editing.
+    """
     if not audio_path.exists():
         raise FileNotFoundError(f"Audio file not found: {audio_path}")
     if audio_path.stat().st_size == 0:
         raise ValueError("Audio file is empty.")
+    if not 0 < max_scene_seconds <= 5:
+        raise ValueError("Maximum scene duration must be greater than 0 and no more than 5 seconds.")
 
     try:
         from google import genai
     except ImportError as exc:
         raise RuntimeError("Missing dependency google-genai. Install requirements.txt first.") from exc
 
+    media = MutagenFile(str(audio_path))
+    if not media or not getattr(media, "info", None):
+        raise RuntimeError("Could not read audio duration. Verify the MP3/WAV file is valid.")
+    audio_duration = float(media.info.length)
+    if audio_duration <= 0:
+        raise RuntimeError("Audio duration is invalid.")
+
     client = genai.Client(api_key=api_key)
     print(f"Uploading {audio_path.name} to Gemini Files API...")
     uploaded = client.files.upload(file=str(audio_path))
-    print(f"Transcribing with {model} (verbatim + word timestamps)...")
+    prompt = f"""
+Transcribe the supplied narration accurately and preserve the spoken wording.
+The audio duration is approximately {audio_duration:.2f} seconds.
+
+Return ONLY valid JSON with this exact structure:
+{{
+  "transcript": "the complete transcript in normal readable form",
+  "segments": [
+    {{"start": 0.0, "end": 4.7, "text": "the exact words spoken in this interval"}}
+  ]
+}}
+
+Timing requirements:
+- Segment timestamps are absolute seconds from the beginning of the audio.
+- Cover the narration from the beginning to the end in chronological order.
+- Each segment must be no longer than {max_scene_seconds:.2f} seconds.
+- Keep each segment's text in the exact spoken order. Do not summarize, paraphrase, omit, or invent words.
+- Place sentence boundaries at natural pauses where possible.
+- Include brief silence as a segment only when it is visually useful; otherwise adjacent segments may have a small gap.
+- Use decimal seconds, not timecode strings.
+- Do not include markdown fences, commentary, or any keys other than transcript and segments.
+""".strip()
+
+    print(f"Transcribing with {model} using Gemini audio understanding...")
     interaction = client.interactions.create(
         model=model,
-        input=[{"type": "audio", "uri": uploaded.uri, "mime_type": uploaded.mime_type}],
-        generation_config={
-            "transcription_config": {
-                "mode": {"type": "verbatim", "timestamp_granularities": ["word"]}
-            }
-        },
+        input=[
+            {"type": "text", "text": prompt},
+            {"type": "audio", "uri": uploaded.uri, "mime_type": uploaded.mime_type},
+        ],
     )
+    response_text = getattr(interaction, "output_text", None) or ""
+    if not response_text.strip():
+        raise RuntimeError("Gemini returned an empty audio transcription response.")
 
-    transcript = getattr(interaction, "output_text", None) or ""
-    word_items = _extract_word_annotations(interaction)
-    if not word_items:
-        word_items = _extract_annotations_fallback(interaction)
-    if not transcript and word_items:
-        transcript = " ".join(item["text"] for item in word_items)
-    if not transcript:
-        raise RuntimeError("Gemini returned no transcript text. Check model access and the audio file.")
-    if not word_items:
+    cleaned = response_text.strip()
+    if cleaned.startswith("```"):
+        cleaned = re.sub(r"^\`\`\`(?:json)?\\s*", "", cleaned, flags=re.IGNORECASE)
+        cleaned = re.sub(r"\\s*\`\`\`$", "", cleaned)
+    try:
+        result = json.loads(cleaned)
+    except json.JSONDecodeError as exc:
         raise RuntimeError(
-            "Gemini returned transcript text but no word-level annotations. "
-            "The scene planner needs timestamps; inspect SDK/API compatibility before proceeding."
-        )
+            "Gemini did not return the required JSON transcript with timed segments. "
+            f"Response preview: {response_text[:700]}"
+        ) from exc
 
-    previous_end = -1.0
-    for index, item in enumerate(word_items):
-        if item["start"] < 0 or item["end"] < item["start"]:
-            raise ValueError(f"Invalid word timestamp at index {index}: {item}")
-        if item["start"] + 0.05 < previous_end:
-            print(f"Warning: overlapping word timestamps near {item['text']!r}.")
-        previous_end = max(previous_end, item["end"])
+    transcript = str(result.get("transcript", "")).strip()
+    raw_segments = result.get("segments") or []
+    if not transcript or not isinstance(raw_segments, list) or not raw_segments:
+        raise RuntimeError("Gemini response is missing transcript text or timed segments.")
 
-    media = MutagenFile(str(audio_path))
-    audio_duration = float(media.info.length) if media and getattr(media, "info", None) else max(item["end"] for item in word_items)
+    segments: list[dict[str, Any]] = []
+    for item in raw_segments:
+        if not isinstance(item, dict):
+            continue
+        try:
+            start = max(0.0, float(item["start"]))
+            end = min(audio_duration, float(item["end"]))
+        except (KeyError, TypeError, ValueError):
+            continue
+        text = str(item.get("text", "")).strip()
+        if text and end > start:
+            segments.append({"start": start, "end": end, "text": text})
+
+    segments.sort(key=lambda item: (item["start"], item["end"]))
+    if not segments:
+        raise RuntimeError("Gemini returned no usable timestamped narration segments.")
+
+    # Enforce the hard five-second visual limit even if the model returns a
+    # slightly longer segment. Text is divided in order across equal time slices.
+    normalized: list[dict[str, Any]] = []
+    for segment in segments:
+        duration = segment["end"] - segment["start"]
+        part_count = max(1, int((duration + max_scene_seconds - 1e-6) // max_scene_seconds))
+        words = segment["text"].split()
+        if part_count == 1:
+            normalized.append(segment)
+            continue
+        for part_index in range(part_count):
+            left = round(len(words) * part_index / part_count)
+            right = round(len(words) * (part_index + 1) / part_count)
+            start = segment["start"] + duration * part_index / part_count
+            end = segment["start"] + duration * (part_index + 1) / part_count
+            text = " ".join(words[left:right]).strip()
+            if text and end > start:
+                normalized.append({"start": start, "end": end, "text": text})
+
+    normalized.sort(key=lambda item: (item["start"], item["end"]))
     payload = {
         "source_audio": audio_path.name,
         "model": model,
         "transcript": transcript,
-        "words": word_items,
+        "segments": normalized,
+        "words": [],
         "duration_seconds": audio_duration,
-        "last_word_end_seconds": max(item["end"] for item in word_items),
-        "word_count": len(word_items),
+        "last_segment_end_seconds": max(item["end"] for item in normalized),
+        "word_count": len(transcript.split()),
+        "segment_count": len(normalized),
+        "timestamp_note": "Segment timestamps are Gemini Flash audio-understanding estimates, not dedicated forced-alignment annotations.",
         "created_at_unix": time.time(),
     }
     write_json_atomic(output_path, payload)
-    print(f"Saved {len(word_items)} word timestamps to {output_path}")
-    print(f"Timed transcript duration: {payload['duration_seconds']:.2f}s")
+    print(f"Saved {len(normalized)} timed narration segments to {output_path}")
+    print(f"Audio duration: {audio_duration:.2f}s")
     return payload
