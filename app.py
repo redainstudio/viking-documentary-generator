@@ -77,8 +77,8 @@ if st.button("Step 1 + 2: Transcribe audio and create storyboard", type="primary
     try:
         with st.status("Analyzing narration...", expanded=True) as status:
             settings = Settings.from_env()
-            st.write("Uploading narration and extracting word-level timestamps...")
-            transcript = transcribe_audio(audio_path, TRANSCRIPT_PATH, settings.transcribe_model, settings.api_key)
+            st.write("Uploading narration and extracting timed narration segments with Gemini 3.8 Flash...")
+            transcript = transcribe_audio(audio_path, TRANSCRIPT_PATH, settings.transcribe_model, settings.api_key, max_seconds)
             st.write(f"Transcribed {transcript['word_count']} words; audio duration {transcript['duration_seconds']:.1f}s.")
             st.write("Creating one historically grounded image brief for each timed scene...")
             scenes = plan_scenes(
