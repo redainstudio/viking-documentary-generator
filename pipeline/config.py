@@ -13,7 +13,7 @@ load_dotenv(ROOT / ".env")
 @dataclass(frozen=True)
 class Settings:
     api_key: str
-    transcribe_model: str = "gemini-3.5-transcribe"
+    transcribe_model: str = "gemini-3.8-flash"
     text_model: str = "gemini-3.8-flash"
     image_model: str = "gemini-3.1-flash-image"
     max_scene_seconds: float = 4.8
@@ -37,7 +37,7 @@ class Settings:
             raise ValueError("MIN_SCENE_SECONDS must be positive and no greater than MAX_SCENE_SECONDS.")
         return cls(
             api_key=key,
-            transcribe_model=os.getenv("GEMINI_TRANSCRIBE_MODEL", "gemini-3.5-transcribe"),
+            transcribe_model=("gemini-3.8-flash" if os.getenv("GEMINI_TRANSCRIBE_MODEL", "gemini-3.8-flash").strip() == "gemini-3.5-transcribe" else os.getenv("GEMINI_TRANSCRIBE_MODEL", "gemini-3.8-flash").strip()),
             text_model=os.getenv("GEMINI_TEXT_MODEL", "gemini-3.8-flash"),
             image_model=os.getenv("GEMINI_IMAGE_MODEL", "gemini-3.1-flash-image"),
             max_scene_seconds=max_scene,
