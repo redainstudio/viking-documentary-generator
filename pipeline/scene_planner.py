@@ -257,15 +257,20 @@ def plan_scenes(
     audio_duration = float(transcript.get("duration_seconds") or 0)
     segments = transcript.get("segments") or []
     words = transcript.get("words") or []
-    if segments:
-        windows = _build_windows_from_segments(segments, audio_duration, max_seconds)
-    else:
-        if not words:
-            raise ValueError("Transcript has neither timed segments nor word-level timestamps.")
+    # Prefer word-level timestamps whenever available. Whisper's segment
+    # boundaries can span several seconds, so splitting segment text evenly
+    # would only estimate word positions and weaken scene-to-audio alignment.
+    if words:
         windows = build_timed_windows(
-            words, max_seconds=max_seconds, min_seconds=min_seconds,
+            words,
+            max_seconds=max_seconds,
+            min_seconds=min_seconds,
             audio_duration=audio_duration or max(float(w["end"]) for w in words),
         )
+    elif segments:
+        windows = _build_windows_from_segments(segments, audio_duration, max_seconds)
+    else:
+        raise ValueError("Transcript has neither timed segments nor word-level timestamps.")
     try:
         from google import genai
     except ImportError as exc:
