@@ -22,7 +22,11 @@ with st.sidebar:
     api_key = st.text_input("Gemini API key", type="password", value=os.getenv("GEMINI_API_KEY", ""))
     text_model = st.text_input("Storyboard model", value=os.getenv("GEMINI_TEXT_MODEL", "gemini-3.8-flash"))
     image_model = st.text_input("Image model", value=os.getenv("GEMINI_IMAGE_MODEL", "gemini-3.1-flash-image"))
-    transcribe_model = st.text_input("Transcription model", value=os.getenv("GEMINI_TRANSCRIBE_MODEL", "gemini-3.5-transcribe"))
+    transcription_default = os.getenv("GEMINI_TRANSCRIBE_MODEL", "gemini-3.8-flash").strip()
+    if transcription_default == "gemini-3.5-transcribe":
+        transcription_default = "gemini-3.8-flash"
+    transcribe_model = st.text_input("Audio transcription model", value=transcription_default)
+    st.caption("Gemini 3.8 Flash analyzes the audio and estimates timed narration segments. Review scene timing before image generation.")
     max_seconds = st.slider("Maximum image duration (seconds)", 2.0, 5.0, 4.8, 0.1)
     image_size = st.selectbox("Image resolution", ["1K", "2K", "4K"], index=0)
     st.caption("Use a paid Gemini API tier for large image batches. Image generation costs are charged by Google.")
